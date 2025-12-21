@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from mcp_quant.data import fetch_yahoo_prices
-from mcp_quant.strategies import backtest, generate_signals, list_strategies, sample_prices
+from mcp_quant.llm_agent import LLMConfigError, LLMResponseError, run_llm_agent
+from mcp_quant.mcp_client import MCPClientError, call_mcp_tool, mcp_client
 
 
 app = FastAPI(title="Quant Strategy Lab")
+
+
+@app.on_event("startup")
+async def startup_mcp() -> None:
+    await mcp_client.connect()
+
+
+@app.on_event("shutdown")
+async def shutdown_mcp() -> None:
+    await mcp_client.close()
 
 
 class BacktestRequest(BaseModel):
@@ -24,6 +35,17 @@ class BacktestRequest(BaseModel):
     end_date: Optional[date] = None
 
 
+class MCPToolRequest(BaseModel):
+    tool_name: str
+    arguments: Optional[Dict[str, Any]] = None
+
+
+class AgentRequest(BaseModel):
+    prompt: str
+    max_steps: int = 3
+    temperature: float = 0.2
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
     return INDEX_HTML
@@ -31,10 +53,13 @@ async def index() -> str:
 
 @app.get("/api/strategies")
 async def strategies() -> List[Dict[str, object]]:
-    return [
-        {"name": spec.name, "description": spec.description, "params": spec.params}
-        for spec in list_strategies()
-    ]
+    try:
+        result = await call_mcp_tool("list_strategies")
+    except MCPClientError as exc:
+        raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
+    if not isinstance(result, list):
+        raise HTTPException(status_code=502, detail="Invalid MCP response for strategies")
+    return result
 
 
 @app.post("/api/backtest")
@@ -47,14 +72,50 @@ async def run_backtest(payload: BacktestRequest) -> Dict[str, object]:
         except Exception as exc:
             raise HTTPException(status_code=502, detail="Failed to fetch Yahoo Finance data") from exc
     else:
-        prices = sample_prices()
-    signals = generate_signals(prices, payload.strategy, payload.params)
-    result = backtest(prices, signals, start_cash=payload.start_cash, fee_bps=payload.fee_bps)
-    return {
-        "prices": prices,
-        "signals": signals,
-        **result,
-    }
+        try:
+            prices = await call_mcp_tool("sample_price_series", {})
+        except MCPClientError as exc:
+            raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
+    try:
+        result = await call_mcp_tool(
+            "run_backtest",
+            {
+                "prices": prices,
+                "strategy": payload.strategy,
+                "params": payload.params,
+                "start_cash": payload.start_cash,
+                "fee_bps": payload.fee_bps,
+            },
+        )
+    except MCPClientError as exc:
+        raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="Invalid MCP response for backtest")
+    return result
+
+
+@app.post("/api/mcp/call")
+async def call_mcp(payload: MCPToolRequest) -> Dict[str, object]:
+    try:
+        result = await call_mcp_tool(payload.tool_name, payload.arguments or {})
+    except MCPClientError as exc:
+        raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
+    return {"tool": payload.tool_name, "result": result}
+
+
+@app.post("/api/agent")
+async def run_agent(payload: AgentRequest) -> Dict[str, object]:
+    try:
+        result = await run_llm_agent(
+            payload.prompt,
+            max_steps=payload.max_steps,
+            temperature=payload.temperature,
+        )
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LLMResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return result
 
 
 INDEX_HTML = """
@@ -124,6 +185,50 @@ INDEX_HTML = """
       display: grid;
       grid-template-columns: minmax(260px, 1fr) minmax(320px, 2fr);
       gap: 20px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 12px;
+      margin: 20px 0;
+      flex-wrap: wrap;
+    }
+
+    .tab {
+      border: 1px solid var(--stroke);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 8px 16px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      width: auto;
+    }
+
+    .tab.active,
+    .tab[aria-selected="true"] {
+      background: var(--accent-2);
+      border-color: var(--accent-2);
+      color: #fff;
+    }
+
+    .tab:focus-visible {
+      outline: 2px solid rgba(13, 111, 133, 0.4);
+      outline-offset: 2px;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel[hidden] {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
     }
 
     .card {
@@ -272,6 +377,17 @@ INDEX_HTML = """
     .dot.price { background: var(--accent-2); }
     .dot.equity { background: var(--accent); }
 
+    .agent-output {
+      background: #0f1724;
+      color: #e6f3ff;
+      border-radius: 12px;
+      padding: 12px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      min-height: 240px;
+      white-space: pre-wrap;
+    }
+
     @media (max-width: 900px) {
       .grid {
         grid-template-columns: 1fr;
@@ -287,68 +403,144 @@ INDEX_HTML = """
       <p>Pick a strategy, tune parameters, and visualize equity curves with a lightweight backtester. Fetch Yahoo Finance data or explore the synthetic series.</p>
     </header>
 
-    <div class="grid">
-      <section class="card">
-        <label for="strategy">Strategy</label>
-        <select id="strategy"></select>
-        <div id="strategyDesc" class="muted"></div>
+    <div class="tabs" role="tablist" aria-label="App sections">
+      <button
+        class="tab active"
+        id="tab-btn-lab"
+        type="button"
+        role="tab"
+        aria-controls="tab-lab"
+        aria-selected="true"
+        data-tab="lab"
+      >
+        Strategy Lab
+      </button>
+      <button
+        class="tab"
+        id="tab-btn-agent"
+        type="button"
+        role="tab"
+        aria-controls="tab-agent"
+        aria-selected="false"
+        data-tab="agent"
+      >
+        LLM Agent
+      </button>
+    </div>
 
-        <div id="paramFields"></div>
+    <div id="tab-lab" class="tab-panel active" role="tabpanel" aria-labelledby="tab-btn-lab">
+      <div class="grid">
+        <section class="card">
+          <label for="strategy">Strategy</label>
+          <select id="strategy"></select>
+          <div id="strategyDesc" class="muted"></div>
 
-        <div class="row">
-          <div>
-            <label for="startCash">Start cash</label>
-            <input id="startCash" type="number" value="10000" />
+          <div id="paramFields"></div>
+
+          <div class="row">
+            <div>
+              <label for="startCash">Start cash</label>
+              <input id="startCash" type="number" value="10000" />
+            </div>
+            <div>
+              <label for="feeBps">Fee (bps)</label>
+              <input id="feeBps" type="number" step="0.1" value="1.0" />
+            </div>
           </div>
-          <div>
-            <label for="feeBps">Fee (bps)</label>
-            <input id="feeBps" type="number" step="0.1" value="1.0" />
+
+          <label for="ticker">Ticker (Yahoo Finance)</label>
+          <input id="ticker" list="tickerList" placeholder="AAPL" />
+          <datalist id="tickerList">
+            <option value="AAPL"></option>
+            <option value="MSFT"></option>
+            <option value="NVDA"></option>
+            <option value="TSLA"></option>
+            <option value="SPY"></option>
+            <option value="QQQ"></option>
+          </datalist>
+
+          <div class="row">
+            <div>
+              <label for="startDate">Start date</label>
+              <input id="startDate" type="date" />
+            </div>
+            <div>
+              <label for="endDate">End date</label>
+              <input id="endDate" type="date" />
+            </div>
           </div>
-        </div>
+          <div class="muted">Leave blank to use synthetic data.</div>
 
-        <label for="ticker">Ticker (Yahoo Finance)</label>
-        <input id="ticker" list="tickerList" placeholder="AAPL" />
-        <datalist id="tickerList">
-          <option value="AAPL"></option>
-          <option value="MSFT"></option>
-          <option value="NVDA"></option>
-          <option value="TSLA"></option>
-          <option value="SPY"></option>
-          <option value="QQQ"></option>
-        </datalist>
+          <button id="runBtn" type="button">Run backtest</button>
+        </section>
 
-        <div class="row">
-          <div>
-            <label for="startDate">Start date</label>
-            <input id="startDate" type="date" />
+        <section class="card">
+          <div class="legend">
+            <span><span class="dot price"></span> Price</span>
+            <span><span class="dot equity"></span> Equity</span>
           </div>
-          <div>
-            <label for="endDate">End date</label>
-            <input id="endDate" type="date" />
+
+          <div class="metrics" id="metrics"></div>
+
+          <div class="chart-block">
+            <h3>Price vs Equity</h3>
+            <canvas id="chart" height="220"></canvas>
           </div>
-        </div>
-        </br>
-        <button id="runBtn" type="button">Run Back Test</button>
-      </section>
 
-      <section class="card">
-        <div class="legend">
-          <span><span class="dot price"></span> Price</span>
-          <span><span class="dot equity"></span> Equity</span>
-        </div>
+          <div class="chart-block">
+            <h3>Position</h3>
+            <canvas id="positionChart" height="160"></canvas>
+          </div>
+        </section>
+      </div>
+    </div>
 
-        <div class="metrics" id="metrics"></div>
+    <div id="tab-agent" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-agent" hidden>
+      <div class="grid">
+        <section class="card">
+          <label for="agentMode">Mode</label>
+          <select id="agentMode">
+            <option value="llm">LLM agent</option>
+            <option value="direct">Direct MCP tool</option>
+          </select>
 
-        <div class="chart-block">
-          <h3>Price vs Equity</h3>
-          <canvas id="chart" height="220"></canvas>
-        </div>
+          <div id="llmControls">
+            <label for="agentPrompt">Prompt</label>
+            <textarea id="agentPrompt" placeholder="Run a backtest using sma_crossover with default params."></textarea>
+            <div class="row">
+              <div>
+                <label for="agentSteps">Max steps</label>
+                <input id="agentSteps" type="number" min="1" max="6" value="3" />
+              </div>
+              <div>
+                <label for="agentTemp">Temperature</label>
+                <input id="agentTemp" type="number" step="0.1" min="0" max="1.5" value="0.2" />
+              </div>
+            </div>
+            <div class="muted">LLM settings come from server environment variables.</div>
+          </div>
 
-        <div class="chart-block">
-          <h3>Position</h3>
-          <canvas id="positionChart" height="160"></canvas>
-        </div>
-      </section>
+          <div id="directControls" style="display: none;">
+            <label for="toolName">Tool</label>
+            <select id="toolName">
+              <option value="list_strategies">list_strategies</option>
+              <option value="get_strategy_schema">get_strategy_schema</option>
+              <option value="sample_price_series">sample_price_series</option>
+              <option value="run_backtest">run_backtest</option>
+            </select>
+            <label for="toolArgs">Arguments (JSON)</label>
+            <textarea id="toolArgs" placeholder='{"name": "sma_crossover"}'></textarea>
+            <div class="muted">Leave blank for empty arguments.</div>
+          </div>
+
+          <button id="agentRunBtn" type="button">Run</button>
+        </section>
+
+        <section class="card">
+          <h3>Agent output</h3>
+          <pre id="agentOutput" class="agent-output">Waiting for input...</pre>
+        </section>
+      </div>
     </div>
   </div>
 
@@ -536,6 +728,8 @@ INDEX_HTML = """
     select.value = data[0].name;
     document.getElementById("runBtn").addEventListener("click", runBacktest);
     setDefaultDates();
+    setupTabs();
+    setupAgent();
     await runBacktest();
   }
 
@@ -579,6 +773,114 @@ INDEX_HTML = """
       payload.start_cash
     );
     renderCharts(result.prices || [], result.equity_curve || [], result.positions || []);
+  }
+
+  function setupTabs() {
+    const tabs = Array.from(document.querySelectorAll(".tab"));
+    const panels = Array.from(document.querySelectorAll(".tab-panel"));
+
+    const activate = (tab) => {
+      const targetId = `tab-${tab.dataset.tab}`;
+      tabs.forEach((node) => {
+        const isActive = node === tab;
+        node.classList.toggle("active", isActive);
+        node.setAttribute("aria-selected", isActive ? "true" : "false");
+        node.tabIndex = isActive ? 0 : -1;
+      });
+      panels.forEach((panel) => {
+        const isActive = panel.id === targetId;
+        panel.classList.toggle("active", isActive);
+        panel.hidden = !isActive;
+      });
+    };
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => activate(tab));
+      tab.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
+          return;
+        }
+        event.preventDefault();
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        const nextIndex = (index + direction + tabs.length) % tabs.length;
+        const nextTab = tabs[nextIndex];
+        nextTab.focus();
+        activate(nextTab);
+      });
+    });
+
+    const active = tabs.find((tab) => tab.classList.contains("active")) || tabs[0];
+    if (active) {
+      activate(active);
+    }
+  }
+
+  function setupAgent() {
+    const modeSelect = document.getElementById("agentMode");
+    const llmControls = document.getElementById("llmControls");
+    const directControls = document.getElementById("directControls");
+    const runBtn = document.getElementById("agentRunBtn");
+    modeSelect.addEventListener("change", () => {
+      const mode = modeSelect.value;
+      llmControls.style.display = mode === "llm" ? "block" : "none";
+      directControls.style.display = mode === "direct" ? "block" : "none";
+    });
+    runBtn.addEventListener("click", runAgent);
+  }
+
+  async function runAgent() {
+    const mode = document.getElementById("agentMode").value;
+    const output = document.getElementById("agentOutput");
+    output.textContent = "Running...";
+    let url = "";
+    let payload = {};
+
+    if (mode === "llm") {
+      const prompt = document.getElementById("agentPrompt").value.trim();
+      const maxSteps = Number(document.getElementById("agentSteps").value || 3);
+      const temperature = Number(document.getElementById("agentTemp").value || 0.2);
+      if (!prompt) {
+        alert("Please enter a prompt.");
+        return;
+      }
+      url = "/api/agent";
+      payload = { prompt, max_steps: maxSteps, temperature };
+    } else {
+      const toolName = document.getElementById("toolName").value;
+      const argsText = document.getElementById("toolArgs").value.trim();
+      let args = {};
+      if (argsText) {
+        try {
+          args = JSON.parse(argsText);
+        } catch (err) {
+          alert("Tool arguments must be valid JSON.");
+          return;
+        }
+      }
+      url = "/api/mcp/call";
+      payload = { tool_name: toolName, arguments: args };
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      let message = "Unable to run agent.";
+      try {
+        const errorData = await response.json();
+        if (errorData.detail) {
+          message = errorData.detail;
+        }
+      } catch (err) {
+        message = "Unable to run agent.";
+      }
+      output.textContent = message;
+      return;
+    }
+    const result = await response.json();
+    output.textContent = JSON.stringify(result, null, 2);
   }
 
   init();

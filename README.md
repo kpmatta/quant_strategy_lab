@@ -39,18 +39,66 @@ uvicorn mcp_quant.web.app:app --reload --port 8000
 
 Open `http://localhost:8000` to explore strategies and visualize price and equity curves. You can also fetch daily prices from Yahoo Finance by entering a ticker and date range.
 
+The UI includes two tabs:
+- **Strategy Lab** for direct MCP-backed backtests.
+- **LLM Agent** for LLM-driven tool selection or direct MCP tool calls.
+
+### MCP client configuration
+
+The web UI calls the MCP server through the MCP protocol:
+
+- Default: spawns `python -m mcp_quant.mcp_server` over stdio and keeps a persistent session.
+- Optional SSE: set `MCP_SERVER_URL` to connect to an MCP server running with SSE transport.
+- Optional stdio overrides: set `MCP_SERVER_COMMAND` and `MCP_SERVER_ARGS` to change how the MCP server is launched.
+
+### LLM agent configuration
+
+The **LLM Agent** tab uses an OpenAI-compatible chat API to decide which MCP tools to call.
+Set these environment variables before starting the web UI:
+
+- `LLM_API_BASE` (default: `https://api.openai.com`)
+- `LLM_MODEL` (default: `gpt-4o-mini`)
+- `LLM_API_KEY` (or `OPENAI_API_KEY`)
+
+If you want the UI to call MCP tools directly without the LLM, select **Direct MCP tool** in the agent tab.
+
+### Environment variables via `.env`
+
+Create a `.env` file in the repo root:
+
+```
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o-mini
+LLM_API_BASE=https://api.openai.com
+```
+
+Load it before starting the UI:
+
+```bash
+set -a
+source .env
+set +a
+uvicorn mcp_quant.web.app:app --reload --port 8000
+```
+
+Or pass it directly (requires `uvicorn[standard]`):
+
+```bash
+uvicorn mcp_quant.web.app:app --reload --port 8000 --env-file .env
+```
+
 ## Testing
 
 Run the test suite with the built-in unittest runner:
 
 ```bash
-python -m unittest discover -s tests
+python3 -m unittest discover -s tests
 ```
 
 Run a single test module:
 
 ```bash
-python -m unittest tests/test_strategies.py
+python3 -m unittest tests/test_strategies.py
 ```
 
 ## Notes

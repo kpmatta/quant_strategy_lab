@@ -1,31 +1,20 @@
 # Designing an MCP-Ready Strategy Lab
 
-When you build a quantitative strategy lab that needs to serve both humans and agents, the architecture has to stay simple and predictable. This system does that by treating the MCP server as a first-class interface alongside the web UI, while keeping the overall layout clean: a single strategy engine, a thin interface layer, and optional market data retrieval.
+When you build a quantitative strategy lab that needs to serve both humans and agents, the architecture has to stay simple and predictable. This system does that by routing strategy execution through the MCP server, while keeping the overall layout clean: a single strategy engine, a thin interface layer, optional market data retrieval, and an LLM-driven tool selector for agent workflows.
 
 This article focuses on the MCP server architecture and how it fits into the broader system, without diving into implementation details.
 
 ## Architecture Diagram
 
 ```mermaid
-graph TD
-  user[Human User]
-  agent[Agent Client]
-  ui[Web Interface]
-  api[Web API]
-  mcp[MCP Server]
-  engine[Strategy Engine]
-  fetcher[Price Fetcher]
-  market[Market Data]
-  synth[Synthetic Series]
-
-  user --> ui
-  ui --> api
-  api --> fetcher
-  fetcher --> market
-  api --> engine
-  engine --> synth
-  agent --> mcp
-  mcp --> engine
+flowchart TB
+    ui["Web Interface"] --> api["Web API"]
+    api --> price["Price Fetcher"] & mcpclient["MCP Client Session"] & llm["LLM Provider"]
+    price --> api
+    mcpclient --> mcp["MCP Server"]
+    mcp --> engine["Strategy Engine"]
+    engine --> synth["Synthetic Series"]
+    llm --> api
 ```
 
 ## A Three‑Layer Mental Model
@@ -33,10 +22,10 @@ graph TD
 The architecture can be thought of in three layers:
 
 1. Core logic: the strategy engine that produces signals, runs backtests, and computes metrics.
-2. Interfaces: MCP tools for agents, plus a web interface for humans.
+2. Interfaces: MCP tools for agents, plus a web interface for humans that can call MCP directly or via an LLM agent.
 3. Data sources: optional market data feeds and synthetic series for demos or offline use.
 
-The MCP server sits in the interface layer. Its responsibility is not to “do the math” itself, but to expose the engine’s capabilities as tools with clear inputs and outputs.
+The MCP server sits in the interface layer. Its responsibility is not to “do the math” itself, but to expose the engine’s capabilities as tools with clear inputs and outputs. The web API keeps a persistent MCP client session and calls those tools, either directly or through an LLM-driven tool selection flow.
 
 ## The MCP Server as a Stable Contract
 
@@ -61,9 +50,9 @@ By avoiding business logic in the server layer, the system keeps one source of t
 
 ## How It Fits Into the Overall System
 
-The MCP server is not the only interface. The architecture intentionally supports a web UI that uses the same underlying engine. This creates two parallel entry points:
+The MCP server is not the only interface. The architecture intentionally supports a web UI that uses the MCP tool contract. This creates two entry points:
 
-- Human‑centric interaction through the web interface.
+- Human‑centric interaction through the web interface (direct MCP calls or LLM agent).
 - Agent‑centric interaction through MCP tools.
 
 Both paths lead to the same engine. Given the same prices and parameters, a backtest run via MCP matches one run in the browser. This is the architectural “anchor” that keeps the system coherent.
@@ -75,7 +64,14 @@ The system supports two types of price data:
 1. Real market data fetched on demand.
 2. Synthetic data for fast demos and offline use.
 
-In this architecture, real market data is fetched through the web API path, while the MCP server does not reach out to external data sources. This matters for MCP architecture because it keeps tools usable even when data sources are unavailable. The MCP server remains data-source agnostic: clients can supply prices directly or call the synthetic series tool for a ready-made input, enabling deterministic testing and reproducible experiments.
+In this architecture, real market data is fetched through the web API path, while the MCP server does not reach out to external data sources. The web API passes fetched prices into the MCP `run_backtest` tool. The LLM agent uses the same MCP tool contract; it only adds a decision layer backed by the LLM provider. This matters for MCP architecture because it keeps tools usable even when data sources are unavailable. The MCP server remains data-source agnostic: clients can supply prices directly or call the synthetic series tool for a ready-made input, enabling deterministic testing and reproducible experiments.
+
+## Runtime Modes
+
+The MCP client can connect in two modes:
+
+- Stdio (default): the web API spawns the MCP server and keeps a persistent session.
+- SSE (optional): the web API connects to an externally hosted MCP server when `MCP_SERVER_URL` is set.
 
 ## Scaling the MCP Layer
 
