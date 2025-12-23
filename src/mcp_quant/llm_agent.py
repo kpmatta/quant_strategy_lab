@@ -105,7 +105,7 @@ def _call_llm(
         headers["Authorization"] = f"Bearer {key}"
     request = Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
     try:
-        with urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=120) as response:
             data = json.load(response)
     except HTTPError as exc:
         body = exc.read().decode("utf-8", "ignore") if exc.fp else ""
