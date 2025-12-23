@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from mcp_quant.data import fetch_yahoo_prices
 from mcp_quant.llm_agent import LLMConfigError, LLMResponseError, run_llm_agent
-from mcp_quant.mcp_client import MCPClientError, call_mcp_tool, mcp_client
+from mcp_quant.mcp_client import MCPClientError, mcp_client
 
 
 app = FastAPI(title="Quant Strategy Lab")
@@ -44,6 +44,10 @@ class AgentRequest(BaseModel):
     prompt: str
     max_steps: int = 3
     temperature: float = 0.2
+    llm_type: Optional[str] = None
+    llm_api_base: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -54,7 +58,7 @@ async def index() -> str:
 @app.get("/api/strategies")
 async def strategies() -> List[Dict[str, object]]:
     try:
-        result = await call_mcp_tool("list_strategies")
+        result = await mcp_client.call_mcp_tool("list_strategies")
     except MCPClientError as exc:
         raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
     if not isinstance(result, list):
@@ -73,11 +77,11 @@ async def run_backtest(payload: BacktestRequest) -> Dict[str, object]:
             raise HTTPException(status_code=502, detail="Failed to fetch Yahoo Finance data") from exc
     else:
         try:
-            prices = await call_mcp_tool("sample_price_series", {})
+            prices = await mcp_client.call_mcp_tool("sample_price_series", {})
         except MCPClientError as exc:
             raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
     try:
-        result = await call_mcp_tool(
+        result = await mcp_client.call_mcp_tool(
             "run_backtest",
             {
                 "prices": prices,
@@ -97,7 +101,7 @@ async def run_backtest(payload: BacktestRequest) -> Dict[str, object]:
 @app.post("/api/mcp/call")
 async def call_mcp(payload: MCPToolRequest) -> Dict[str, object]:
     try:
-        result = await call_mcp_tool(payload.tool_name, payload.arguments or {})
+        result = await mcp_client.call_mcp_tool(payload.tool_name, payload.arguments or {})
     except MCPClientError as exc:
         raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
     return {"tool": payload.tool_name, "result": result}
@@ -110,6 +114,10 @@ async def run_agent(payload: AgentRequest) -> Dict[str, object]:
             payload.prompt,
             max_steps=payload.max_steps,
             temperature=payload.temperature,
+            llm_type=payload.llm_type,
+            llm_api_base=payload.llm_api_base,
+            llm_model=payload.llm_model,
+            llm_api_key=payload.llm_api_key,
         )
     except LLMConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -377,14 +385,10 @@ INDEX_HTML = """
     .dot.price { background: var(--accent-2); }
     .dot.equity { background: var(--accent); }
 
-    .agent-output {
-      background: #0f1724;
-      color: #e6f3ff;
-      border-radius: 12px;
-      padding: 12px;
-      font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 12px;
-      min-height: 240px;
+    .agent-message {
+      margin: 8px 0 4px;
+      color: var(--muted);
+      font-size: 13px;
       white-space: pre-wrap;
     }
 
@@ -498,13 +502,21 @@ INDEX_HTML = """
     <div id="tab-agent" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-agent" hidden>
       <div class="grid">
         <section class="card">
-          <label for="agentMode">Mode</label>
-          <select id="agentMode">
-            <option value="llm">LLM agent</option>
-            <option value="direct">Direct MCP tool</option>
-          </select>
-
           <div id="llmControls">
+            <label for="llmType">LLM type</label>
+            <select id="llmType"></select>
+            <div class="muted">Choose a provider to auto-fill defaults.</div>
+
+            <label for="llmApiBase">LLM API base</label>
+            <input id="llmApiBase" type="text" placeholder="https://api.openai.com" />
+
+            <label for="llmModel">Model</label>
+            <input id="llmModel" list="llmModelList" placeholder="gpt-4o-mini" />
+            <datalist id="llmModelList"></datalist>
+
+            <label for="llmApiKey">API key</label>
+            <input id="llmApiKey" type="password" placeholder="sk-..." />
+
             <label for="agentPrompt">Prompt</label>
             <textarea id="agentPrompt" placeholder="Run a backtest using sma_crossover with default params."></textarea>
             <div class="row">
@@ -520,25 +532,28 @@ INDEX_HTML = """
             <div class="muted">LLM settings come from server environment variables.</div>
           </div>
 
-          <div id="directControls" style="display: none;">
-            <label for="toolName">Tool</label>
-            <select id="toolName">
-              <option value="list_strategies">list_strategies</option>
-              <option value="get_strategy_schema">get_strategy_schema</option>
-              <option value="sample_price_series">sample_price_series</option>
-              <option value="run_backtest">run_backtest</option>
-            </select>
-            <label for="toolArgs">Arguments (JSON)</label>
-            <textarea id="toolArgs" placeholder='{"name": "sma_crossover"}'></textarea>
-            <div class="muted">Leave blank for empty arguments.</div>
-          </div>
-
           <button id="agentRunBtn" type="button">Run</button>
         </section>
 
         <section class="card">
-          <h3>Agent output</h3>
-          <pre id="agentOutput" class="agent-output">Waiting for input...</pre>
+          <div class="legend">
+            <span><span class="dot price"></span> Price</span>
+            <span><span class="dot equity"></span> Equity</span>
+          </div>
+
+          <div id="agentMessage" class="agent-message">Waiting for input...</div>
+
+          <div class="metrics" id="agentMetrics"></div>
+
+          <div class="chart-block">
+            <h3>Price vs Equity</h3>
+            <canvas id="agentChart" height="220"></canvas>
+          </div>
+
+          <div class="chart-block">
+            <h3>Position</h3>
+            <canvas id="agentPositionChart" height="160"></canvas>
+          </div>
         </section>
       </div>
     </div>
@@ -549,6 +564,8 @@ INDEX_HTML = """
     strategies: [],
     chart: null,
     positionChart: null,
+    agentChart: null,
+    agentPositionChart: null,
   };
 
   function createParamInput(key, value) {
@@ -615,8 +632,9 @@ INDEX_HTML = """
     }
   }
 
-  function renderMetrics(metrics, prices, equity, startCash) {
-    const container = document.getElementById("metrics");
+  function renderMetrics(metrics, prices, equity, startCash, containerId = "metrics") {
+    const container = document.getElementById(containerId);
+    if (!container) return;
     container.innerHTML = "";
     const firstPrice = prices.length ? Number(prices[0]) : NaN;
     const lastPrice = prices.length ? Number(prices[prices.length - 1]) : NaN;
@@ -648,12 +666,23 @@ INDEX_HTML = """
     });
   }
 
-  function renderCharts(prices, equity, positions) {
+  function renderCharts(
+    prices,
+    equity,
+    positions,
+    chartId = "chart",
+    positionChartId = "positionChart",
+    chartKey = "chart",
+    positionKey = "positionChart"
+  ) {
     const labels = prices.map((_, i) => i + 1);
-    if (state.chart) state.chart.destroy();
-    if (state.positionChart) state.positionChart.destroy();
+    const chartEl = document.getElementById(chartId);
+    const positionEl = document.getElementById(positionChartId);
+    if (!chartEl || !positionEl) return;
+    if (state[chartKey]) state[chartKey].destroy();
+    if (state[positionKey]) state[positionKey].destroy();
 
-    state.chart = new Chart(document.getElementById("chart"), {
+    state[chartKey] = new Chart(chartEl, {
       type: "line",
       data: {
         labels,
@@ -686,7 +715,7 @@ INDEX_HTML = """
       }
     });
 
-    state.positionChart = new Chart(document.getElementById("positionChart"), {
+    state[positionKey] = new Chart(positionEl, {
       type: "line",
       data: {
         labels,
@@ -816,50 +845,160 @@ INDEX_HTML = """
   }
 
   function setupAgent() {
-    const modeSelect = document.getElementById("agentMode");
     const llmControls = document.getElementById("llmControls");
-    const directControls = document.getElementById("directControls");
     const runBtn = document.getElementById("agentRunBtn");
-    modeSelect.addEventListener("change", () => {
-      const mode = modeSelect.value;
-      llmControls.style.display = mode === "llm" ? "block" : "none";
-      directControls.style.display = mode === "direct" ? "block" : "none";
+    const llmType = document.getElementById("llmType");
+    const llmApiBase = document.getElementById("llmApiBase");
+    const llmModel = document.getElementById("llmModel");
+    const llmModelList = document.getElementById("llmModelList");
+    const typeOptions = {
+      openai: {
+        label: "OpenAI",
+        base: "https://api.openai.com",
+        models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+      },
+      gemini: {
+        label: "Gemini",
+        base: "https://generativelanguage.googleapis.com/v1beta/openai",
+        models: ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
+      },
+      openrouter: {
+        label: "OpenRouter",
+        base: "https://openrouter.ai/api",
+        models: ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-1.5-pro"],
+      },
+      groq: {
+        label: "Groq",
+        base: "https://api.groq.com/openai",
+        models: ["llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+      },
+      together: {
+        label: "Together",
+        base: "https://api.together.xyz",
+        models: ["meta-llama/Llama-3.1-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"],
+      },
+      fireworks: {
+        label: "Fireworks",
+        base: "https://api.fireworks.ai/inference",
+        models: ["accounts/fireworks/models/llama-v3p1-70b-instruct"],
+      },
+      deepinfra: {
+        label: "DeepInfra",
+        base: "https://api.deepinfra.com/v1/openai",
+        models: ["meta-llama/Meta-Llama-3.1-70B-Instruct", "Qwen/Qwen2.5-72B-Instruct"],
+      },
+      perplexity: {
+        label: "Perplexity",
+        base: "https://api.perplexity.ai",
+        models: ["sonar", "sonar-pro"],
+      },
+      mistral: {
+        label: "Mistral",
+        base: "https://api.mistral.ai",
+        models: ["mistral-large-latest", "mistral-medium-latest"],
+      },
+      custom: {
+        label: "Custom",
+        base: "",
+        models: [],
+      },
+    };
+    const typeOrder = ["openai", "gemini", "openrouter", "groq", "together", "fireworks", "deepinfra", "perplexity", "mistral", "custom"];
+    typeOrder.forEach((key) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = typeOptions[key].label;
+      llmType.appendChild(option);
     });
+
+    const syncModels = (models) => {
+      llmModelList.innerHTML = "";
+      models.forEach((model) => {
+        const option = document.createElement("option");
+        option.value = model;
+        llmModelList.appendChild(option);
+      });
+    };
+
+    const updateTypeDefaults = () => {
+      const config = typeOptions[llmType.value] || typeOptions.openai;
+      if (llmType.value === "custom") {
+        llmApiBase.removeAttribute("readonly");
+      } else {
+        llmApiBase.setAttribute("readonly", "readonly");
+        llmApiBase.value = config.base;
+      }
+      syncModels(config.models);
+      if (!llmModel.value && config.models.length) {
+        llmModel.value = config.models[0];
+      }
+    };
+
+    llmControls.style.display = "block";
+    llmType.addEventListener("change", updateTypeDefaults);
+    updateTypeDefaults();
     runBtn.addEventListener("click", runAgent);
   }
 
-  async function runAgent() {
-    const mode = document.getElementById("agentMode").value;
-    const output = document.getElementById("agentOutput");
-    output.textContent = "Running...";
-    let url = "";
-    let payload = {};
+  function clearAgentOutput() {
+    const metrics = document.getElementById("agentMetrics");
+    if (metrics) metrics.innerHTML = "";
+    if (state.agentChart) {
+      state.agentChart.destroy();
+      state.agentChart = null;
+    }
+    if (state.agentPositionChart) {
+      state.agentPositionChart.destroy();
+      state.agentPositionChart = null;
+    }
+  }
 
+  function findBacktestResult(result, mode, directArgs) {
     if (mode === "llm") {
-      const prompt = document.getElementById("agentPrompt").value.trim();
-      const maxSteps = Number(document.getElementById("agentSteps").value || 3);
-      const temperature = Number(document.getElementById("agentTemp").value || 0.2);
-      if (!prompt) {
-        alert("Please enter a prompt.");
-        return;
-      }
-      url = "/api/agent";
-      payload = { prompt, max_steps: maxSteps, temperature };
-    } else {
-      const toolName = document.getElementById("toolName").value;
-      const argsText = document.getElementById("toolArgs").value.trim();
-      let args = {};
-      if (argsText) {
-        try {
-          args = JSON.parse(argsText);
-        } catch (err) {
-          alert("Tool arguments must be valid JSON.");
-          return;
+      const steps = Array.isArray(result.steps) ? result.steps : [];
+      for (let i = steps.length - 1; i >= 0; i -= 1) {
+        const step = steps[i];
+        if (step && step.tool === "run_backtest" && step.result) {
+          const startCash = Number(step.arguments?.start_cash ?? 10000);
+          return { data: step.result, startCash };
         }
       }
-      url = "/api/mcp/call";
-      payload = { tool_name: toolName, arguments: args };
+      return null;
     }
+    if (result && result.tool === "run_backtest" && result.result) {
+      const startCash = Number((directArgs && directArgs.start_cash) ?? 10000);
+      return { data: result.result, startCash };
+    }
+    return null;
+  }
+
+  async function runAgent() {
+    const messageEl = document.getElementById("agentMessage");
+    clearAgentOutput();
+    if (messageEl) {
+      messageEl.textContent = "Running...";
+    }
+    const prompt = document.getElementById("agentPrompt").value.trim();
+    const maxSteps = Number(document.getElementById("agentSteps").value || 3);
+    const temperature = Number(document.getElementById("agentTemp").value || 0.2);
+    const llmType = document.getElementById("llmType").value;
+    const llmApiBase = document.getElementById("llmApiBase").value.trim();
+    const llmModel = document.getElementById("llmModel").value.trim();
+    const llmApiKey = document.getElementById("llmApiKey").value.trim();
+    if (!prompt) {
+      alert("Please enter a prompt.");
+      return;
+    }
+    const url = "/api/agent";
+    const payload = {
+      prompt,
+      max_steps: maxSteps,
+      temperature,
+      llm_type: llmType || null,
+      llm_api_base: llmApiBase || null,
+      llm_model: llmModel || null,
+      llm_api_key: llmApiKey || null,
+    };
 
     const response = await fetch(url, {
       method: "POST",
@@ -867,20 +1006,50 @@ INDEX_HTML = """
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
-      let message = "Unable to run agent.";
+      let errorMessage = "Unable to run agent.";
       try {
         const errorData = await response.json();
         if (errorData.detail) {
-          message = errorData.detail;
+          errorMessage = errorData.detail;
         }
       } catch (err) {
-        message = "Unable to run agent.";
+        errorMessage = "Unable to run agent.";
       }
-      output.textContent = message;
+      if (messageEl) {
+        messageEl.textContent = errorMessage;
+      }
       return;
     }
     const result = await response.json();
-    output.textContent = JSON.stringify(result, null, 2);
+    const backtest = findBacktestResult(result, "llm", null);
+    if (backtest) {
+      const prices = backtest.data.prices || [];
+      const equity = backtest.data.equity_curve || [];
+      const positions = backtest.data.positions || [];
+      renderMetrics(
+        backtest.data.metrics || {},
+        prices,
+        equity,
+        backtest.startCash,
+        "agentMetrics"
+      );
+      renderCharts(
+        prices,
+        equity,
+        positions,
+        "agentChart",
+        "agentPositionChart",
+        "agentChart",
+        "agentPositionChart"
+      );
+      if (messageEl) {
+        messageEl.textContent = result.final || "Backtest result loaded.";
+      }
+      return;
+    }
+    if (messageEl) {
+      messageEl.textContent = result.final || "No backtest result returned.";
+    }
   }
 
   init();
