@@ -471,9 +471,8 @@ function App() {
   return (
     <div className="wrap">
       <header>
-        <div className="badge">Quant Strategy Lab</div>
-        <h1>Test momentum and mean-reversion ideas in seconds.</h1>
-        <p>Pick a strategy, tune parameters, and visualize equity curves with a lightweight backtester. Fetch Yahoo Finance data or explore the synthetic series.</p>
+        <h1>Quant Strategy Lab using MCP server and LLM Agent</h1>
+        <p>Pick a strategy, tune parameters, and visualize equity curves with a lightweight backtester with Yahoo Finance data.</p>
       </header>
 
       <div className="tabs" role="tablist" aria-label="App sections">
@@ -604,16 +603,13 @@ function App() {
                 />
               </div>
             </div>
-            <div className="muted">Leave blank to use synthetic data.</div>
-
+            <br/>
             <button id="runBtn" type="button" onClick={runBacktest}>Run backtest</button>
           </section>
 
           <section className="card">
             <Legend />
-
             <MetricGrid items={labMetricItems} />
-
             <div className="chart-block">
               <h3>Price vs Equity</h3>
               <LineChart
@@ -725,6 +721,7 @@ function App() {
                 </div>
               </div>
               <div className="muted">LLM settings come from server environment variables.</div>
+              <br/>
             </div>
 
             <button id="agentRunBtn" type="button" onClick={runAgent}>Run</button>
