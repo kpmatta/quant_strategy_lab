@@ -9,13 +9,13 @@ This article focuses on the MCP server architecture and how it fits into the bro
 ```mermaid
 flowchart TB
     ui["React UI (Manual + LLM Mode)"] --> api["Web API (FastAPI)"]
+    api <--> data[("yahoo prices")]
     api --> manual["Manual Mode Client"]
     api --> agent["LLM Agent"]
     manual --> mcpclient["MCP Client Session"]
     agent --> mcpclient
     mcpclient --> mcp["MCP Server"]
     mcp --> engine["Strategy Engine"]
-    engine --> synth["Synthetic Series"]
 ```
 
 ## A Three‑Layer Mental Model
