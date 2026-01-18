@@ -101,6 +101,64 @@ async def run_backtest(payload: BacktestRequest) -> Dict[str, object]:
     return result
 
 
+class OptionRequest(BaseModel):
+    stock_price: float
+    strike_price: float
+    time_to_expiry: float
+    risk_free_rate: float
+    volatility: float
+    option_type: str
+    dividend_yield: float = 0.0
+    num_steps: int = 100
+
+
+@app.post("/api/options/price")
+async def price_option(payload: OptionRequest) -> Dict[str, float]:
+    """Price an American option using the binomial tree model."""
+    try:
+        result = await manual_client.price_american_option(
+            stock_price=payload.stock_price,
+            strike_price=payload.strike_price,
+            time_to_expiry=payload.time_to_expiry,
+            risk_free_rate=payload.risk_free_rate,
+            volatility=payload.volatility,
+            option_type=payload.option_type,
+            dividend_yield=payload.dividend_yield,
+            num_steps=payload.num_steps,
+        )
+    except MCPClientError as exc:
+        raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="Invalid MCP response for option pricing")
+    return result
+
+
+@app.post("/api/options/greeks")
+async def calculate_greeks(payload: OptionRequest) -> Dict[str, float]:
+    """Calculate option Greeks using finite difference approximations."""
+    try:
+        result = await manual_client.calculate_option_greeks(
+            stock_price=payload.stock_price,
+            strike_price=payload.strike_price,
+            time_to_expiry=payload.time_to_expiry,
+            risk_free_rate=payload.risk_free_rate,
+            volatility=payload.volatility,
+            option_type=payload.option_type,
+            dividend_yield=payload.dividend_yield,
+            num_steps=payload.num_steps,
+        )
+    except MCPClientError as exc:
+        raise HTTPException(status_code=502, detail=f"MCP error: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="Invalid MCP response for Greeks calculation")
+    return result
+
+
+
 
 
 @app.post("/api/agent")

@@ -226,6 +226,22 @@ function App() {
   const [agentPositions, setAgentPositions] = useState([]);
   const [agentStartCash, setAgentStartCash] = useState(10000);
 
+  // Options calculator state
+  const [optionInputs, setOptionInputs] = useState({
+    stockPrice: 100,
+    strikePrice: 100,
+    timeToExpiry: 1.0,
+    riskFreeRate: 5.0,  // Store as percentage for UI
+    volatility: 20.0,    // Store as percentage for UI
+    dividendYield: 0.0,  // Store as percentage for UI
+    numSteps: 100,
+    optionType: 'call'
+  });
+  const [optionPrice, setOptionPrice] = useState(null);
+  const [optionIntrinsic, setOptionIntrinsic] = useState(null);
+  const [optionGreeks, setOptionGreeks] = useState(null);
+  const [optionMessage, setOptionMessage] = useState('');
+
   const initialRunRef = useRef(false);
 
   const selectedStrategy = useMemo(
@@ -392,7 +408,75 @@ function App() {
     setAgentMessage(result.final || "No backtest result returned.");
   }
 
-  const tabList = ["lab", "agent"];
+  async function calculateOption() {
+    setOptionMessage("Calculating...");
+    setOptionPrice(null);
+    setOptionIntrinsic(null);
+    setOptionGreeks(null);
+
+    const payload = {
+      stock_price: Number(optionInputs.stockPrice),
+      strike_price: Number(optionInputs.strikePrice),
+      time_to_expiry: Number(optionInputs.timeToExpiry),
+      risk_free_rate: Number(optionInputs.riskFreeRate) / 100.0,  // Convert % to decimal
+      volatility: Number(optionInputs.volatility) / 100.0,        // Convert % to decimal
+      dividend_yield: Number(optionInputs.dividendYield) / 100.0, // Convert % to decimal
+      num_steps: Number(optionInputs.numSteps),
+      option_type: optionInputs.optionType
+    };
+
+    // Price the option
+    try {
+      const priceResponse = await fetch("/api/options/price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!priceResponse.ok) {
+        let errorMessage = "Unable to price option.";
+        try {
+          const errorData = await priceResponse.json();
+          if (errorData.detail) {
+            errorMessage = errorData.detail;
+          }
+        } catch (err) {
+          errorMessage = "Unable to price option.";
+        }
+        setOptionMessage(errorMessage);
+        return;
+      }
+
+      const priceData = await priceResponse.json();
+      setOptionPrice(priceData.price);
+      setOptionIntrinsic(priceData.intrinsic_value);
+    } catch (err) {
+      setOptionMessage("Network error pricing option.");
+      return;
+    }
+
+    // Calculate Greeks
+    try {
+      const greeksResponse = await fetch("/api/options/greeks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!greeksResponse.ok) {
+        setOptionMessage("Option priced, but Greeks calculation failed.");
+        return;
+      }
+
+      const greeksData = await greeksResponse.json();
+      setOptionGreeks(greeksData);
+      setOptionMessage("Calculation complete.");
+    } catch (err) {
+      setOptionMessage("Option priced, but network error calculating Greeks.");
+    }
+  }
+
+  const tabList = ["lab", "agent", "options"];
   const labLabels = useMemo(() => labPrices.map((_, i) => i + 1), [labPrices]);
   const agentLabels = useMemo(() => agentPrices.map((_, i) => i + 1), [agentPrices]);
 
@@ -478,7 +562,11 @@ function App() {
       <div className="tabs" role="tablist" aria-label="App sections">
         {tabList.map((tab, index) => {
           const isActive = activeTab === tab;
-          const label = tab === "lab" ? "Manual Mode" : "LLM Mode";
+          const label = tab === "lab"
+            ? "Manual Mode"
+            : tab === "agent"
+              ? "LLM Mode"
+              : "Options";
           return (
             <TabButton
               key={tab}
@@ -603,7 +691,7 @@ function App() {
                 />
               </div>
             </div>
-            <br/>
+            <br />
             <button id="runBtn" type="button" onClick={runBacktest}>Run backtest</button>
           </section>
 
@@ -721,7 +809,7 @@ function App() {
                 </div>
               </div>
               <div className="muted">LLM settings come from server environment variables.</div>
-              <br/>
+              <br />
             </div>
 
             <button id="agentRunBtn" type="button" onClick={runAgent}>Run</button>
@@ -753,6 +841,189 @@ function App() {
                 height={160}
               />
             </div>
+          </section>
+        </div>
+      </div>
+
+      <div
+        id="tab-options"
+        className={`tab-panel ${activeTab === "options" ? "active" : ""}`}
+        role="tabpanel"
+        aria-labelledby="tab-btn-options"
+        hidden={activeTab !== "options"}
+      >
+        <div className="grid">
+          <section className="card">
+            <h2>American Options Pricing Calculator</h2>
+            <p className="muted">Binomial tree model with configurable parameters</p>
+
+            <div className="row">
+              <div>
+                <label htmlFor="stockPrice">Stock Price (S)</label>
+                <input
+                  id="stockPrice"
+                  type="number"
+                  step="0.01"
+                  value={optionInputs.stockPrice}
+                  onChange={(e) => setOptionInputs({ ...optionInputs, stockPrice: e.target.value })}
+                />
+              </div>
+              <div>
+                <label htmlFor="strikePrice">Strike Price (K)</label>
+                <input
+                  id="strikePrice"
+                  type="number"
+                  step="0.01"
+                  value={optionInputs.strikePrice}
+                  onChange={(e) => setOptionInputs({ ...optionInputs, strikePrice: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="row">
+              <div>
+                <label htmlFor="timeToExpiry">Time to Expiry (years)</label>
+                <input
+                  id="timeToExpiry"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={optionInputs.timeToExpiry}
+                  onChange={(e) => setOptionInputs({ ...optionInputs, timeToExpiry: e.target.value })}
+                />
+              </div>
+              <div>
+                <label htmlFor="riskFreeRate">Risk-Free Rate (%)</label>
+                <input
+                  id="riskFreeRate"
+                  type="number"
+                  step="0.1"
+                  value={optionInputs.riskFreeRate}
+                  onChange={(e) => setOptionInputs({ ...optionInputs, riskFreeRate: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="row">
+              <div>
+                <label htmlFor="volatility">Volatility (σ) (%)</label>
+                <input
+                  id="volatility"
+                  type="number"
+                  step="0.1"
+                  min="0.1"
+                  value={optionInputs.volatility}
+                  onChange={(e) => setOptionInputs({ ...optionInputs, volatility: e.target.value })}
+                />
+              </div>
+              <div>
+                <label htmlFor="dividendYield">Dividend Yield (%)</label>
+                <input
+                  id="dividendYield"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={optionInputs.dividendYield}
+                  onChange={(e) => setOptionInputs({ ...optionInputs, dividendYield: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="numSteps">Number of Time Steps (N)</label>
+              <input
+                id="numSteps"
+                type="number"
+                min="10"
+                max="500"
+                step="10"
+                value={optionInputs.numSteps}
+                onChange={(e) => setOptionInputs({ ...optionInputs, numSteps: e.target.value })}
+              />
+              <div className="muted">Higher values increase accuracy but take longer to calculate (10-500)</div>
+            </div>
+
+            <div>
+              <label>Option Type</label>
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="optionType"
+                    value="call"
+                    checked={optionInputs.optionType === 'call'}
+                    onChange={(e) => setOptionInputs({ ...optionInputs, optionType: e.target.value })}
+                  />
+                  Call
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="optionType"
+                    value="put"
+                    checked={optionInputs.optionType === 'put'}
+                    onChange={(e) => setOptionInputs({ ...optionInputs, optionType: e.target.value })}
+                  />
+                  Put
+                </label>
+              </div>
+            </div>
+
+            <br />
+            <button id="calculateBtn" type="button" onClick={calculateOption}>Calculate Option</button>
+          </section>
+
+          <section className="card">
+            <h2>Results</h2>
+            {optionMessage && <div className="agent-message">{optionMessage}</div>}
+
+            {optionPrice !== null && (
+              <>
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <div style={{ fontSize: '0.875rem', color: '#666', marginBottom: '0.25rem' }}>Option Price</div>
+                  <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#0d6f85' }}>{formatCurrency(optionPrice)}</div>
+                </div>
+
+                {optionIntrinsic !== null && (
+                  <div style={{ marginBottom: '1.5rem' }}>
+                    <div style={{ fontSize: '0.875rem', color: '#666', marginBottom: '0.25rem' }}>Intrinsic Value</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: '500' }}>{formatCurrency(optionIntrinsic)}</div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {optionGreeks && (
+              <>
+                <h3 style={{ marginTop: '1.5rem', marginBottom: '1rem' }}>Greeks</h3>
+                <div className="metrics">
+                  <div className="metric">
+                    <span>Delta</span>
+                    <strong>{Number(optionGreeks.delta).toFixed(4)}</strong>
+                  </div>
+                  <div className="metric">
+                    <span>Gamma</span>
+                    <strong>{Number(optionGreeks.gamma).toFixed(4)}</strong>
+                  </div>
+                  <div className="metric">
+                    <span>Theta</span>
+                    <strong>{Number(optionGreeks.theta).toFixed(4)}</strong>
+                  </div>
+                  <div className="metric">
+                    <span>Vega</span>
+                    <strong>{Number(optionGreeks.vega).toFixed(4)}</strong>
+                  </div>
+                  <div className="metric">
+                    <span>Rho</span>
+                    <strong>{Number(optionGreeks.rho).toFixed(4)}</strong>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {!optionPrice && !optionMessage && (
+              <p className="muted">Enter parameters and click "Calculate Option" to see results.</p>
+            )}
           </section>
         </div>
       </div>

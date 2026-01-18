@@ -32,5 +32,57 @@ class ManualModeClient:
             },
         )
 
+    async def price_american_option(
+        self,
+        *,
+        stock_price: float,
+        strike_price: float,
+        time_to_expiry: float,
+        risk_free_rate: float,
+        volatility: float,
+        option_type: str,
+        dividend_yield: float = 0.0,
+        num_steps: int = 100,
+    ) -> Any:
+        return await mcp_client.call_mcp_tool(
+            "price_american_option",
+            {
+                "stock_price": stock_price,
+                "strike_price": strike_price,
+                "time_to_expiry": time_to_expiry,
+                "risk_free_rate": risk_free_rate,
+                "volatility": volatility,
+                "option_type": option_type,
+                "dividend_yield": dividend_yield,
+                "num_steps": num_steps,
+            },
+        )
+
+    async def calculate_option_greeks(
+        self,
+        *,
+        stock_price: float,
+        strike_price: float,
+        time_to_expiry: float,
+        risk_free_rate: float,
+        volatility: float,
+        option_type: str,
+        dividend_yield: float = 0.0,
+        num_steps: int = 100,
+    ) -> Any:
+        return await mcp_client.call_mcp_tool(
+            "calculate_option_greeks",
+            {
+                "stock_price": stock_price,
+                "strike_price": strike_price,
+                "time_to_expiry": time_to_expiry,
+                "risk_free_rate": risk_free_rate,
+                "volatility": volatility,
+                "option_type": option_type,
+                "dividend_yield": dividend_yield,
+                "num_steps": num_steps,
+            },
+        )
+
 
 manual_client = ManualModeClient()

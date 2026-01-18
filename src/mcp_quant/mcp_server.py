@@ -8,6 +8,10 @@ from mcp.server.fastmcp import FastMCP
 
 
 from .data import fetch_yahoo_prices as yahoo_fetch
+from .options import (
+    calculate_greeks,
+    price_american_option as price_option,
+)
 from .strategies import (
     StrategySpec,
     backtest,
@@ -161,5 +165,84 @@ def get_strategy_schema(name: str) -> Dict[str, object]:
     return {"name": spec.name, "description": spec.description, "params": spec.params}
 
 
+@mcp.tool()
+def price_american_option(
+    stock_price: float,
+    strike_price: float,
+    time_to_expiry: float,
+    risk_free_rate: float,
+    volatility: float,
+    option_type: str,
+    dividend_yield: float = 0.0,
+    num_steps: int = 100,
+) -> Dict[str, float]:
+    """
+    Price an American option using the binomial tree model.
+    
+    Args:
+        stock_price: Current stock price (S)
+        strike_price: Strike price (K)
+        time_to_expiry: Time to expiration in years (T)
+        risk_free_rate: Risk-free interest rate as decimal (e.g., 0.05 for 5%)
+        volatility: Volatility as decimal (e.g., 0.20 for 20%)
+        option_type: 'call' or 'put'
+        dividend_yield: Continuous dividend yield as decimal (q), default 0
+        num_steps: Number of time steps in binomial tree (N), default 100
+        
+    Returns:
+        Dictionary with 'price' and 'intrinsic_value'
+    """
+    return price_option(
+        stock_price=stock_price,
+        strike_price=strike_price,
+        time_to_expiry=time_to_expiry,
+        risk_free_rate=risk_free_rate,
+        volatility=volatility,
+        option_type=option_type,
+        dividend_yield=dividend_yield,
+        num_steps=num_steps,
+    )
+
+
+@mcp.tool()
+def calculate_option_greeks(
+    stock_price: float,
+    strike_price: float,
+    time_to_expiry: float,
+    risk_free_rate: float,
+    volatility: float,
+    option_type: str,
+    dividend_yield: float = 0.0,
+    num_steps: int = 100,
+) -> Dict[str, float]:
+    """
+    Calculate option Greeks using finite difference approximations.
+    
+    Args:
+        stock_price: Current stock price (S)
+        strike_price: Strike price (K)
+        time_to_expiry: Time to expiration in years (T)
+        risk_free_rate: Risk-free interest rate as decimal (e.g., 0.05 for 5%)
+        volatility: Volatility as decimal (e.g., 0.20 for 20%)
+        option_type: 'call' or 'put'
+        dividend_yield: Continuous dividend yield as decimal (q), default 0
+        num_steps: Number of time steps in binomial tree (N), default 100
+        
+    Returns:
+        Dictionary with delta, gamma, theta, vega, and rho
+    """
+    return calculate_greeks(
+        stock_price=stock_price,
+        strike_price=strike_price,
+        time_to_expiry=time_to_expiry,
+        risk_free_rate=risk_free_rate,
+        volatility=volatility,
+        option_type=option_type,
+        dividend_yield=dividend_yield,
+        num_steps=num_steps,
+    )
+
+
 if __name__ == "__main__":
     mcp.run()
+
